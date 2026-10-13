@@ -9,6 +9,22 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meter -d meter"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  service:
+    build: ./service
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://meter:meter@db:5432/meter
+      ADMIN_KEY: change-me-admin-key
+    ports:
+      - "3000:3000"
 
 volumes:
   pgdata:
