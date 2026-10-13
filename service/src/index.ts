@@ -3,6 +3,7 @@ import { pool } from "./db";
 import { migrate } from "./migrate";
 import { seed } from "./seed";
 import { accountsRouter } from "./accounts";
+import { requireApiKey } from "./auth";
 async function main() {
   await migrate();
    await seed();
@@ -10,6 +11,16 @@ async function main() {
   const app = express();
   app.use(express.json());
     app.use(accountsRouter);
+      app.get("/v1/account", requireApiKey, async (req, res) => {
+    const result = await pool.query(
+      `SELECT a.id, a.name, p.name AS plan, p.monthly_allowance, p.max_per_request
+       FROM accounts a
+       JOIN plans p ON p.id = a.plan_id
+       WHERE a.id = $1`,
+      [req.account!.id]
+    );
+    res.json(result.rows[0]);
+  });
 
   app.get("/health", async (_req, res) => {
     const result = await pool.query("SELECT 1 AS ok");
