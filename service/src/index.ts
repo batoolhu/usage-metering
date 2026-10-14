@@ -4,6 +4,7 @@ import { migrate } from "./migrate";
 import { seed } from "./seed";
 import { accountsRouter } from "./accounts";
 import { usersRouter } from "./users";
+import { plansRouter } from "./plans";
 import { requireApiKey } from "./auth";
 
 async function main() {
@@ -20,6 +21,7 @@ async function main() {
 
   app.use(accountsRouter);
   app.use(usersRouter);
+  app.use(plansRouter);
 
   app.get("/v1/account", requireApiKey, async (req, res) => {
     const result = await pool.query(
