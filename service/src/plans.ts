@@ -63,7 +63,7 @@ plansRouter.get("/v1/plans", requireApiKey, async (req, res) => {
 
 // تعديل خطة مخصصة
 plansRouter.patch("/v1/plans/:id", requireApiKey, async (req, res) => {
-  const id = req.params.id;
+    const id = String(req.params.id);
   if (!/^\d+$/.test(id)) {
     return res.status(404).json({ error: "plan not found" });
   }
