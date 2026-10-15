@@ -25,6 +25,13 @@ services:
       ADMIN_KEY: change-me-admin-key
     ports:
       - "3000:3000"
-
+  client:
+    build: ./client
+    depends_on:
+      - service
+    environment:
+      SERVICE_URL: http://service:3000
+      ADMIN_KEY: change-me-admin-key
+      
 volumes:
   pgdata:
