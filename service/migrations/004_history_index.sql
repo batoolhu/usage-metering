@@ -1,0 +1,1 @@
+CREATE INDEX requests_account_id_idx ON requests (account_id, id DESC);
