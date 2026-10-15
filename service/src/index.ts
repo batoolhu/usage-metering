@@ -7,6 +7,7 @@ import { usersRouter } from "./users";
 import { plansRouter } from "./plans";
 import { requireApiKey } from "./auth";
 import { consumeRouter } from "./consumeRoute";
+import { usageRouter } from "./usage";
 
 async function main() {
   await migrate();
@@ -24,7 +25,8 @@ async function main() {
   app.use(usersRouter);
   app.use(plansRouter);
   app.use(consumeRouter);
-  
+  app.use(usageRouter);
+
   app.get("/v1/account", requireApiKey, async (req, res) => {
     const result = await pool.query(
       `SELECT a.id, a.name, p.name AS plan, p.monthly_allowance, p.max_per_request
