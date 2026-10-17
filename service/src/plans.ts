@@ -4,9 +4,8 @@ import { requireApiKey } from "./auth";
 
 export const plansRouter = Router();
 
-const isNonNegInt = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
-const isPosInt = (v: unknown) => Number.isInteger(v) && (v as number) > 0;
-
+const isNonNegInt = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+const isPosInt = (v: unknown) => Number.isSafeInteger(v) && (v as number) > 0;
 // إنشاء خطة مخصصة
 plansRouter.post("/v1/plans", requireApiKey, async (req, res) => {
   const { kind, name, monthly_allowance, max_per_request } = req.body ?? {};

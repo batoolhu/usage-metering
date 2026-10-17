@@ -1,4 +1,4 @@
-import express from "express";
+import express, { Request, Response, NextFunction } from "express";
 import { pool } from "./db";
 import { migrate } from "./migrate";
 import { seed } from "./seed";
@@ -40,6 +40,17 @@ async function main() {
     res.json(result.rows[0]);
   });
 
+    app.use((_req, res) => {
+    res.status(404).json({ error: "route not found" });
+  });
+
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    if (err?.type === "entity.parse.failed") {
+      return res.status(400).json({ error: "invalid JSON body" });
+    }
+    console.error(err);
+    res.status(500).json({ error: "internal server error" });
+  });
   app.listen(3000, () => {
     console.log("service listening on port 3000");
   });
