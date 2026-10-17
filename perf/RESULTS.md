@@ -13,7 +13,7 @@
 | Scenario | Before | After | Correctness |
 |---|---|---|---|
 | many | 69 req/s (p50 676 ms) | 87 req/s (p50 520 ms) | PASS |
-| hot | 47 req/s (p50 950 ms) | 60 req/s (p50 736 ms) | PASS |
+| hot | 47 req/s (p50 950 ms) | 53-60 req/s (p50 736-756 ms, 2 runs) | PASS |
 
 ## What I learned
 1. Running the load script from Windows gave 140 req/s even for `/health`. From inside Docker it was 1635 req/s. The first measurements were limited by the environment, not by the service.
@@ -22,10 +22,9 @@
 4. `hot` is slower than `many` because requests for the same account run one after another on the locked account usage row.
 
 ## Limitations
-- One run per scenario, so differences of around 5-10% are within noise.
+- Numbers come from one or two runs per scenario on a single laptop. Two runs of `hot` gave 60 and 53 req/s, so run-to-run noise is around 10%: the improvement is real but modest.
 - Everything runs on one machine, so the load generator, service and database compete for the same CPU and disk.
 - A bigger gain would need a different approach (for example batching writes), which I did not try.
-
 ## Reproduce
 docker compose up -d --build
 docker compose run --rm -v "${PWD}/perf:/perf" -e SERVICE_URL=http://service:3000 client npx tsx /perf/baseline.ts
