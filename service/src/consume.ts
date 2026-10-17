@@ -12,45 +12,45 @@ export interface ConsumeInput {
   requestId: string;
 }
 
-// بيقرأ الاستخدام والحدود الحالية. إذا lock = true بيقفل صفوف الاستخدام
-async function loadSides(
+// حدود الحساب والمستخدم بـ query واحد.
+// بتنقرأ من الـ DB كل طلب، فتعديل الخطة بيأثر فوراً.
+async function loadLimits(client: PoolClient, accountId: string, userId: string) {
+  const r = await client.query(
+    `SELECT ap.monthly_allowance AS a_allow, ap.max_per_request AS a_max,
+            up.monthly_allowance AS u_allow, up.max_per_request AS u_max
+     FROM accounts a
+     JOIN plans ap ON ap.id = a.plan_id
+     JOIN users u ON u.id = $2
+     JOIN plans up ON up.id = u.plan_id
+     WHERE a.id = $1`,
+    [accountId, userId]
+  );
+  const row = r.rows[0];
+  return {
+    account: { monthlyAllowance: Number(row.a_allow), maxPerRequest: Number(row.a_max) },
+    user: { monthlyAllowance: Number(row.u_allow), maxPerRequest: Number(row.u_max) },
+  };
+}
+
+// قراءة الاستخدام بدون قفل (بنستخدمها للـ retry بس)
+async function readUsage(
   client: PoolClient,
   accountId: string,
   userId: string,
-  month: string,
-  lock: boolean
+  month: string
 ) {
-  const suffix = lock ? " FOR UPDATE" : "";
-
-  // الترتيب ثابت دايماً: الحساب أول ثم المستخدم (لتجنب deadlock)
-  const accUsage = await client.query(
-    `SELECT consumed FROM account_usage WHERE account_id = $1 AND month = $2${suffix}`,
+  const a = await client.query(
+    "SELECT consumed FROM account_usage WHERE account_id = $1 AND month = $2",
     [accountId, month]
   );
-  const userUsage = await client.query(
-    `SELECT consumed FROM user_usage WHERE user_id = $1 AND month = $2${suffix}`,
+  const u = await client.query(
+    "SELECT consumed FROM user_usage WHERE user_id = $1 AND month = $2",
     [userId, month]
   );
-
-  // الحدود بتتقرأ من الـ DB كل مرة، فتعديل الخطة بيأثر فوراً
-  const accPlan = await client.query(
-    `SELECT p.monthly_allowance, p.max_per_request
-     FROM accounts a JOIN plans p ON p.id = a.plan_id WHERE a.id = $1`,
-    [accountId]
-  );
-  const userPlan = await client.query(
-    `SELECT p.monthly_allowance, p.max_per_request
-     FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = $1`,
-    [userId]
-  );
-
-  const side = (usage: any, plan: any): Side => ({
-    monthlyAllowance: Number(plan.rows[0].monthly_allowance),
-    maxPerRequest: Number(plan.rows[0].max_per_request),
-    consumed: Number(usage.rows[0]?.consumed ?? 0),
-  });
-
-  return { account: side(accUsage, accPlan), user: side(userUsage, userPlan) };
+  return {
+    account: Number(a.rows[0]?.consumed ?? 0),
+    user: Number(u.rows[0]?.consumed ?? 0),
+  };
 }
 
 export async function consume(input: ConsumeInput) {
@@ -60,21 +60,18 @@ export async function consume(input: ConsumeInput) {
   try {
     await client.query("BEGIN");
 
-    // 1) المستخدم لازم يكون تابع لهالحساب (العزل)
+    // 1) المستخدم لازم يكون تابع لهالحساب (العزل) + الشهر الحالي (UTC) بنفس الـ query
     const u = await client.query(
-      "SELECT id FROM users WHERE account_id = $1 AND external_id = $2",
+      `SELECT id,
+              to_char(date_trunc('month', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS month
+       FROM users WHERE account_id = $1 AND external_id = $2`,
       [accountId, userExternalId]
     );
     if (u.rowCount === 0) throw new UserNotFoundError();
     const userId: string = u.rows[0].id;
+    const month: string = u.rows[0].month;
 
-    // 2) الشهر الحالي (UTC) من الـ DB
-    const m = await client.query(
-      "SELECT to_char(date_trunc('month', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS month"
-    );
-    const month: string = m.rows[0].month;
-
-    // 3) سجّلي الطلب. إذا request_id مكرر ما بيضيف شي (retry)
+    // 2) سجّلي الطلب. إذا request_id مكرر ما بيضيف شي (retry)
     const ins = await client.query(
       `INSERT INTO requests (account_id, user_id, request_id, units, month)
        VALUES ($1, $2, $3, $4, $5)
@@ -108,32 +105,50 @@ export async function consume(input: ConsumeInput) {
             rule: r.rejected_rule,
             limit: Number(r.rejected_limit),
           };
-      sides = await loadSides(client, accountId, userId, r.month, false);
+      const limits = await loadLimits(client, accountId, userId);
+      const usage = await readUsage(client, accountId, userId, r.month);
+      sides = {
+        account: { ...limits.account, consumed: usage.account },
+        user: { ...limits.user, consumed: usage.user },
+      };
     } else {
       // ----- طلب جديد -----
-      await client.query(
-        "INSERT INTO account_usage (account_id, month) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      // إنشاء صف الشهر إذا مش موجود + قفله + قراءة الاستخدام، كلها بـ query واحد لكل جهة.
+      // الترتيب ثابت دايماً: الحساب أول ثم المستخدم (لتجنب deadlock).
+      const aUse = await client.query(
+        `INSERT INTO account_usage (account_id, month, consumed) VALUES ($1, $2, 0)
+         ON CONFLICT (account_id, month)
+         DO UPDATE SET consumed = account_usage.consumed
+         RETURNING consumed`,
         [accountId, month]
       );
-      await client.query(
-        "INSERT INTO user_usage (user_id, month) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+      const uUse = await client.query(
+        `INSERT INTO user_usage (user_id, month, consumed) VALUES ($1, $2, 0)
+         ON CONFLICT (user_id, month)
+         DO UPDATE SET consumed = user_usage.consumed
+         RETURNING consumed`,
         [userId, month]
       );
 
-      // قفل الصفوف وقراءة الحالة
-      sides = await loadSides(client, accountId, userId, month, true);
+      const limits = await loadLimits(client, accountId, userId);
+      sides = {
+        account: { ...limits.account, consumed: Number(aUse.rows[0].consumed) },
+        user: { ...limits.user, consumed: Number(uUse.rows[0].consumed) },
+      };
 
       // القرار
       decision = evaluate(units, sides.user, sides.account);
 
       if (decision.accepted) {
+        // تحديث الجدولين بـ statement واحد
         await client.query(
-          "UPDATE account_usage SET consumed = consumed + $1 WHERE account_id = $2 AND month = $3",
-          [units, accountId, month]
-        );
-        await client.query(
-          "UPDATE user_usage SET consumed = consumed + $1 WHERE user_id = $2 AND month = $3",
-          [units, userId, month]
+          `WITH a AS (
+             UPDATE account_usage SET consumed = consumed + $1
+             WHERE account_id = $2 AND month = $4
+           )
+           UPDATE user_usage SET consumed = consumed + $1
+           WHERE user_id = $3 AND month = $4`,
+          [units, accountId, userId, month]
         );
         sides.account.consumed += units;
         sides.user.consumed += units;
